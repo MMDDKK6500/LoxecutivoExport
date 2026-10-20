@@ -4,6 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const ExcelJS = require('exceljs');
 const express = require('express');
+const PDFDocument = require('pdfkit');
 
 const app = express();
 const port = Number(process.env.PORT || 8083);
@@ -23,6 +24,16 @@ const COLORS = {
   text: '1F2937',
   border: 'D7E1EA',
   white: 'FFFFFF',
+};
+
+const PDF_COLORS = {
+  navy: '#1F4E78',
+  blue: '#D9EAF7',
+  lightBlue: '#EEF5FB',
+  gray: '#64748B',
+  text: '#1F2937',
+  border: '#D7E1EA',
+  white: '#FFFFFF',
 };
 
 app.use(cors());
@@ -167,6 +178,232 @@ function addDateTimeFormats(sheet, dateColumn, timeColumn, startRow, endRow) {
     sheet.getCell(`${dateColumn}${row}`).numFmt = 'dd/mm/yyyy';
     sheet.getCell(`${timeColumn}${row}`).numFmt = 'hh:mm';
   }
+}
+
+function formatDate(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : 'Não definido';
+}
+
+function formatTime(value) {
+  const match = String(value || '').match(/T(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : 'Não definido';
+}
+
+function reportData(event, trips, passengersByTrip, vehicles) {
+  const sortedTrips = [...trips].sort(compareTrips);
+  const passengerCollections = new Map();
+  sortedTrips.forEach((trip, index) => {
+    passengerCollections.set(trip.id, {
+      id: `P-${String(index + 1).padStart(3, '0')}`,
+      count: Array.isArray(passengersByTrip.get(trip.id)) ? passengersByTrip.get(trip.id).length : 0,
+    });
+  });
+  const vehicleMap = new Map((Array.isArray(vehicles) ? vehicles : []).map((vehicle) => [vehicle.idPlaca, vehicle]));
+  return { event, sortedTrips, passengerCollections, vehicleMap };
+}
+
+function pdfText(value) {
+  return String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+}
+
+function createPdfBuffer(event, trips, passengersByTrip, vehicles) {
+  const { sortedTrips, passengerCollections, vehicleMap } = reportData(event, trips, passengersByTrip, vehicles);
+  const totalPassengers = [...passengerCollections.values()].reduce((sum, item) => sum + item.count, 0);
+
+  return new Promise((resolve, reject) => {
+    const document = new PDFDocument({ size: 'A4', margin: 42, bufferPages: true, compress: true });
+    const chunks = [];
+    document.on('data', (chunk) => chunks.push(chunk));
+    document.on('error', reject);
+    document.on('end', () => resolve(Buffer.concat(chunks)));
+
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const margin = 42;
+    const contentWidth = pageWidth - margin * 2;
+    const bottom = pageHeight - margin - 26;
+    let cursor = margin;
+
+    const drawPageHeader = (continuation = false) => {
+      document.font('Helvetica-Bold').fontSize(9).fillColor(PDF_COLORS.navy)
+        .text(continuation ? `Relatório do evento - ${pdfText(event.nome)}` : 'Loxecutivo', margin, margin - 2);
+      document.moveTo(margin, margin + 15).lineTo(pageWidth - margin, margin + 15)
+        .strokeColor(PDF_COLORS.border).lineWidth(0.7).stroke();
+      cursor = margin + 28;
+    };
+
+    const newPage = () => {
+      document.addPage();
+      drawPageHeader(true);
+    };
+
+    const ensureSpace = (height) => {
+      if (cursor + height > bottom) newPage();
+    };
+
+    const drawSectionTitle = (title) => {
+      ensureSpace(42);
+      document.font('Helvetica-Bold').fontSize(15).fillColor(PDF_COLORS.navy).text(pdfText(title), margin, cursor);
+      cursor += 25;
+    };
+
+    const drawTable = (title, columns, rows) => {
+      drawSectionTitle(title);
+      const rowHeight = 23;
+      const drawHeader = () => {
+        document.rect(margin, cursor, contentWidth, rowHeight).fill(PDF_COLORS.navy);
+        let x = margin;
+        columns.forEach((column) => {
+          document.font('Helvetica-Bold').fontSize(7.6).fillColor(PDF_COLORS.white)
+            .text(pdfText(column.label), x + 4, cursor + 7, { width: column.width - 8, align: 'left', lineBreak: false });
+          x += column.width;
+        });
+        cursor += rowHeight;
+      };
+      drawHeader();
+
+      rows.forEach((row, rowIndex) => {
+        const values = columns.map((column) => pdfText(typeof column.value === 'function' ? column.value(row) : row[column.key]));
+        const heights = columns.map((column, index) => document.heightOfString(values[index], { width: column.width - 8, font: 'Helvetica', size: 7.5 }));
+        const height = Math.max(rowHeight, Math.min(42, Math.max(...heights) + 10));
+        if (cursor + height > bottom) {
+          newPage();
+          drawSectionTitle(`${title} (continuação)`);
+          drawHeader();
+        }
+        if (rowIndex % 2 === 0) document.rect(margin, cursor, contentWidth, height).fill(PDF_COLORS.lightBlue);
+        document.rect(margin, cursor, contentWidth, height).strokeColor(PDF_COLORS.border).lineWidth(0.35).stroke();
+        let x = margin;
+        columns.forEach((column, index) => {
+          document.font('Helvetica').fontSize(7.5).fillColor(PDF_COLORS.text)
+            .text(values[index], x + 4, cursor + 6, { width: column.width - 8, height: height - 8, ellipsis: true });
+          x += column.width;
+        });
+        cursor += height;
+      });
+      cursor += 18;
+    };
+
+    drawPageHeader();
+    document.font('Helvetica-Bold').fontSize(24).fillColor(PDF_COLORS.navy).text('Relatório do evento', margin, cursor);
+    cursor += 31;
+    document.font('Helvetica-Oblique').fontSize(10).fillColor(PDF_COLORS.gray).text('Exportação gerada pelo Loxecutivo', margin, cursor);
+    cursor += 32;
+
+    const metadata = [
+      ['Evento', event.nome || 'Não informado'],
+      ['Local', addressLabel(event.idEndereco)],
+      ['Cidade/UF', [event.idEndereco?.cidade, event.idEndereco?.uf].filter(Boolean).join('/') || 'Não informado'],
+      ['Total de viagens', sortedTrips.length],
+      ['Total de passageiros', totalPassengers],
+      ['Gerado em', new Date().toLocaleString('pt-BR')],
+    ];
+    metadata.forEach(([label, value]) => {
+      document.rect(margin, cursor, 145, 22).fill(PDF_COLORS.blue);
+      document.font('Helvetica-Bold').fontSize(9).fillColor(PDF_COLORS.navy).text(pdfText(label), margin + 7, cursor + 7);
+      document.font('Helvetica').fontSize(9).fillColor(PDF_COLORS.text).text(pdfText(value), margin + 155, cursor + 7, { width: contentWidth - 155 });
+      cursor += 22;
+    });
+    cursor += 20;
+
+    const tripRows = sortedTrips.map((trip) => {
+      const collection = passengerCollections.get(trip.id);
+      const vehicle = vehicleDetails(vehicleMap.get(trip.idVeiculo), trip.idVeiculo);
+      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''}\n${trip.idVeiculo || ''}`.trim(), passageiros: collection.id, quantidade: collection.count };
+    });
+    drawTable('Resumo das viagens', [
+      { key: 'motorista', label: 'Motorista', width: 105 },
+      { key: 'data', label: 'Data', width: 58 },
+      { key: 'horario', label: 'Horário', width: 48 },
+      { key: 'veiculo', label: 'Veículo', width: 105 },
+      { key: 'passageiros', label: 'Coleção', width: 105 },
+      { key: 'quantidade', label: 'Qtd.', width: 42 },
+    ], tripRows);
+
+    newPage();
+    const detailedTripRows = sortedTrips.map((trip) => {
+      const collection = passengerCollections.get(trip.id);
+      const vehicle = vehicleDetails(vehicleMap.get(trip.idVeiculo), trip.idVeiculo);
+      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), origem: addressLabel(trip.localDeOrigem), destino: addressLabel(trip.localDeDestino), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''} - ${trip.idVeiculo || ''}`, passageiros: `${collection.id} (${collection.count})` };
+    });
+    drawTable('Viagens', [
+      { key: 'motorista', label: 'Motorista', width: 76 },
+      { key: 'data', label: 'Data', width: 45 },
+      { key: 'horario', label: 'Hora', width: 37 },
+      { key: 'origem', label: 'Origem', width: 83 },
+      { key: 'destino', label: 'Destino', width: 83 },
+      { key: 'veiculo', label: 'Veículo', width: 100 },
+      { key: 'passageiros', label: 'Passageiros', width: 87 },
+    ], detailedTripRows);
+
+    newPage();
+    const passengerRows = sortedTrips.map((trip) => {
+      const collection = passengerCollections.get(trip.id);
+      return { id: collection.id, data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), motorista: fullName(trip.idMotorista), veiculo: trip.idVeiculo || '', quantidade: collection.count };
+    });
+    drawTable('Coleções de passageiros', [
+      { key: 'id', label: 'Coleção', width: 105 },
+      { key: 'data', label: 'Data', width: 65 },
+      { key: 'horario', label: 'Horário', width: 55 },
+      { key: 'motorista', label: 'Motorista', width: 125 },
+      { key: 'veiculo', label: 'Veículo', width: 100 },
+      { key: 'quantidade', label: 'Quantidade', width: 60 },
+    ], passengerRows);
+
+    newPage();
+    const drivers = [...new Map(sortedTrips.map((trip) => [trip.idMotorista?.id || fullName(trip.idMotorista), trip.idMotorista])).values()]
+      .filter(Boolean)
+      .sort((left, right) => fullName(left).localeCompare(fullName(right), 'pt-BR', { sensitivity: 'base' }));
+    drawTable('Motoristas utilizados', [
+      { key: 'id', label: 'ID', width: 55 },
+      { key: 'nome', label: 'Nome', width: 115 },
+      { key: 'sobrenome', label: 'Sobrenome', width: 145 },
+      { key: 'rg', label: 'RG', width: 90 },
+      { key: 'cpf', label: 'CPF', width: 105 },
+    ], drivers);
+
+    const usedVehicles = [...new Set(sortedTrips.map((trip) => trip.idVeiculo).filter(Boolean))]
+      .map((plate) => vehicleDetails(vehicleMap.get(plate), plate));
+    drawTable('Veículos utilizados', [
+      { key: 'idPlaca', label: 'Placa', width: 100 },
+      { key: 'marca', label: 'Marca', width: 125 },
+      { key: 'modelo', label: 'Modelo', width: 135 },
+      { key: 'ano', label: 'Ano', width: 65 },
+      { key: 'cor', label: 'Cor', width: 85 },
+    ], usedVehicles);
+
+    const addressRows = [];
+    const addAddress = (type, address, reference) => {
+      if (!address) return;
+      const existing = addressRows.find((row) => row.type === type && addressKey(row.address) === addressKey(address));
+      if (existing) {
+        if (reference && !existing.references.includes(reference)) existing.references.push(reference);
+        return;
+      }
+      addressRows.push({ type, address, references: reference ? [reference] : [] });
+    };
+    addAddress('Local do evento', event.idEndereco, event.nome);
+    sortedTrips.forEach((trip) => {
+      const reference = `${fullName(trip.idMotorista)} (${formatTime(trip.dataHora)})`;
+      addAddress('Origem', trip.localDeOrigem, reference);
+      addAddress('Destino', trip.localDeDestino, reference);
+    });
+    drawTable('Endereços utilizados', [
+      { key: 'tipo', label: 'Tipo', width: 75 },
+      { key: 'endereco', label: 'Endereço', width: 180 },
+      { key: 'cidade', label: 'Cidade/UF', width: 95 },
+      { key: 'referencia', label: 'Referência', width: 161 },
+    ], addressRows.map((row) => ({ tipo: row.type, endereco: `${addressLabel(row.address)}`, cidade: [row.address.cidade, row.address.uf].filter(Boolean).join('/'), referencia: row.references.join(', ') })));
+
+    const pages = document.bufferedPageRange();
+    for (let page = pages.start; page < pages.start + pages.count; page += 1) {
+      document.switchToPage(page);
+      document.font('Helvetica').fontSize(8).fillColor(PDF_COLORS.gray)
+        .text(`Loxecutivo - Página ${page - pages.start + 1} de ${pages.count}`, margin, pageHeight - margin - 10, { width: contentWidth, align: 'right' });
+    }
+    document.end();
+  });
 }
 
 function createWorkbook(event, trips, passengersByTrip, vehicles) {
@@ -332,20 +569,26 @@ app.get('/health', (_request, response) => {
   response.json({ status: 'ok', service: 'loxecutivo-export' });
 });
 
+async function loadEventData(eventId, authorization) {
+  const event = await coreGet(`/eventos/${eventId}`, authorization);
+  const trips = await coreGet(`/viagens/evento/${eventId}`, authorization);
+  const vehicles = await coreGet('/veiculos', authorization);
+  const passengersByTrip = new Map();
+
+  await Promise.all((Array.isArray(trips) ? trips : []).map(async (trip) => {
+    passengersByTrip.set(trip.id, await coreGet(`/passageiros/viagem/${trip.id}`, authorization));
+  }));
+
+  return { event, trips: Array.isArray(trips) ? trips : [], passengersByTrip, vehicles };
+}
+
 app.get('/eventos/:eventId/excel', async (request, response, next) => {
   try {
     const eventId = requiredEventId(request.params.eventId);
     const authorization = authorizationHeader(request);
-    const event = await coreGet(`/eventos/${eventId}`, authorization);
-    const trips = await coreGet(`/viagens/evento/${eventId}`, authorization);
-    const vehicles = await coreGet('/veiculos', authorization);
-    const passengersByTrip = new Map();
+    const { event, trips, passengersByTrip, vehicles } = await loadEventData(eventId, authorization);
 
-    await Promise.all((Array.isArray(trips) ? trips : []).map(async (trip) => {
-      passengersByTrip.set(trip.id, await coreGet(`/passageiros/viagem/${trip.id}`, authorization));
-    }));
-
-    const workbook = createWorkbook(event, Array.isArray(trips) ? trips : [], passengersByTrip, vehicles);
+    const workbook = createWorkbook(event, trips, passengersByTrip, vehicles);
     const buffer = await workbook.xlsx.writeBuffer();
     const baseName = String(event.nome || `evento-${eventId}`)
       .normalize('NFD')
@@ -366,12 +609,37 @@ app.get('/eventos/:eventId/excel', async (request, response, next) => {
   }
 });
 
+app.get('/eventos/:eventId/pdf', async (request, response, next) => {
+  try {
+    const eventId = requiredEventId(request.params.eventId);
+    const authorization = authorizationHeader(request);
+    const { event, trips, passengersByTrip, vehicles } = await loadEventData(eventId, authorization);
+    const buffer = await createPdfBuffer(event, trips, passengersByTrip, vehicles);
+    const baseName = String(event.nome || `evento-${eventId}`)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .toLowerCase() || `evento-${eventId}`;
+
+    response.status(200);
+    response.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${baseName}.pdf"`,
+      'Content-Length': buffer.length,
+    });
+    response.send(buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use((error, _request, response, _next) => {
   const status = Number(error.status) || 500;
   if (status >= 500) console.error('Export error:', error);
   response.status(status).json({
     status,
-    message: status === 500 ? 'Não foi possível gerar o arquivo Excel.' : error.message,
+    message: status === 500 ? 'Não foi possível gerar o arquivo de exportação.' : error.message,
   });
 });
 
@@ -381,4 +649,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, createWorkbook };
+module.exports = { app, createWorkbook, createPdfBuffer };

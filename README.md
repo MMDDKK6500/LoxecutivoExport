@@ -1,6 +1,6 @@
 # Loxecutivo Export
 
-Microserviço responsável por buscar um evento no Loxecutivo Core e gerar o relatório Excel aprovado para o projeto.
+Microserviço responsável por buscar um evento no Loxecutivo Core e gerar os relatórios Excel e PDF do projeto.
 
 ## Configuração
 
@@ -24,16 +24,25 @@ Variáveis:
 GET /health
 ```
 
-### Exportar um evento
+### Exportar um evento para Excel
 
 ```http
 GET /eventos/{id}/excel
 Authorization: Bearer <jwt>
 ```
 
+### Exportar um evento para PDF
+
+```http
+GET /eventos/{id}/pdf
+Authorization: Bearer <jwt>
+```
+
 O serviço encaminha o JWT para o Core. O Core continua responsável por validar a sessão através do serviço de autenticação.
 
 O arquivo contém as abas `Resumo`, `Viagens`, `Passageiros`, `Motoristas`, `Veículos` e `Endereços`. As viagens são agrupadas por motorista e ordenadas por data e hora. A aba de passageiros contém uma coleção (`P-001`, `P-002`, etc.) e sua quantidade para cada viagem.
+
+O PDF usa o mesmo conteúdo e agrupamento do Excel em um relatório A4 com resumo, viagens, coleções de passageiros, motoristas, veículos e endereços.
 
 ## Nginx
 
@@ -49,4 +58,4 @@ location /export/ {
 }
 ```
 
-Depois disso, o frontend pode chamar `/export/eventos/{id}/excel` e baixar a resposta como um arquivo `.xlsx`.
+Depois disso, o frontend pode chamar `/export/eventos/{id}/excel` para baixar um `.xlsx` ou `/export/eventos/{id}/pdf` para baixar um `.pdf`.
