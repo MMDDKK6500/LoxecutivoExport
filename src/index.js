@@ -6,11 +6,15 @@ const ExcelJS = require('exceljs');
 const express = require('express');
 const PDFDocument = require('pdfkit');
 const { aggregateCompanyReport, createCompanyWorkbook, createCompanyPdf } = require('./companyReport');
+const { reportPaths, listWeeklyReports, saveWeeklyReport, startWeeklyReportScheduler } = require('./weeklyReports');
 
 const app = express();
 const port = Number(process.env.PORT || 8083);
 const coreUrl = (process.env.CORE_URL || 'http://127.0.0.1:8081').replace(/\/$/, '');
 const requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
+const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://127.0.0.1:8082/validar';
+const reportStorageDir = process.env.REPORT_STORAGE_DIR || require('node:path').join(__dirname, '..', 'storage', 'reports');
+const reportServiceToken = process.env.REPORT_SERVICE_TOKEN || '';
 const allowedOrigins = (process.env.CORS_ORIGINS || 'https://loxecutivo.mmddkk.dev.br,http://localhost:5173')
   .split(',')
   .map((origin) => origin.trim())
@@ -80,6 +84,20 @@ async function coreGet(path, authorization) {
         throw new ServiceError(error.response.status, String(message));
       }
       throw new ServiceError(503, 'O serviço operacional está indisponível.');
+    }
+    throw error;
+  }
+}
+
+async function validateUserAuthorization(authorization) {
+  try {
+    await axios.post(authServiceUrl, null, { headers: { Authorization: authorization }, timeout: requestTimeout });
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        throw new ServiceError(401, 'Acesso negado: token inválido ou expirado.');
+      }
+      throw new ServiceError(503, 'O serviço de autenticação está indisponível.');
     }
     throw error;
   }
@@ -631,6 +649,24 @@ app.get('/health', (_request, response) => {
   response.json({ status: 'ok', service: 'loxecutivo-export' });
 });
 
+app.get('/relatorio-geral/semanais', async (request, response, next) => {
+  try {
+    await validateUserAuthorization(authorizationHeader(request));
+    response.json(await listWeeklyReports(reportStorageDir));
+  } catch (error) { next(error); }
+});
+
+app.get('/relatorio-geral/semanais/:id/pdf', async (request, response, next) => {
+  try {
+    const { pdf } = reportPaths(reportStorageDir, request.params.id);
+    await validateUserAuthorization(authorizationHeader(request));
+    response.type('application/pdf').download(pdf, `relatorio-semanal-${request.params.id}.pdf`, (error) => {
+      if (error && !response.headersSent) next(error.code === 'ENOENT'
+        ? new ServiceError(404, 'Relatório semanal não encontrado.') : error);
+    });
+  } catch (error) { next(error); }
+});
+
 async function loadEventData(eventId, authorization) {
   const event = await coreGet(`/eventos/${eventId}`, authorization);
   const trips = await coreGet(`/viagens/evento/${eventId}`, authorization);
@@ -775,6 +811,32 @@ app.use((error, _request, response, _next) => {
 if (require.main === module) {
   app.listen(port, () => {
     console.log(`Export service running on port ${port}`);
+    if (!reportServiceToken) {
+      console.warn('Weekly reports are disabled: configure REPORT_SERVICE_TOKEN in Export and Core.');
+      return;
+    }
+    const timezone = process.env.REPORT_TIMEZONE || 'America/Sao_Paulo';
+    const scheduleHour = Number(process.env.REPORT_SCHEDULE_HOUR ?? 0);
+    if (!Number.isInteger(scheduleHour) || scheduleHour < 0 || scheduleHour > 23) {
+      console.error('REPORT_SCHEDULE_HOUR must be an integer from 0 to 23; weekly scheduler not started.');
+      return;
+    }
+    startWeeklyReportScheduler({
+      directory: reportStorageDir,
+      timezone,
+      scheduleHour,
+      async generate(id) {
+        const authorization = `Bearer ${reportServiceToken}`;
+        const weekStart = new Date(`${id}T00:00:00.000Z`);
+        weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+        const report = await loadCompanyReport(authorization, {
+          from: weekStart.toISOString().slice(0, 10),
+          to: id,
+        });
+        const result = await saveWeeklyReport(reportStorageDir, id, report, new Date(), createCompanyPdf);
+        return result.created;
+      },
+    });
   });
 }
 

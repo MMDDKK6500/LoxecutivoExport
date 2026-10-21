@@ -28,9 +28,18 @@ test('report endpoints require a Bearer token before contacting Core', async () 
   const excel = await request(app).get('/eventos/1/excel');
   const pdf = await request(app).get('/eventos/1/pdf');
   const company = await request(app).get('/relatorio-geral');
+  const weekly = await request(app).get('/relatorio-geral/semanais');
   assert.equal(excel.status, 401);
   assert.equal(pdf.status, 401);
   assert.equal(company.status, 401);
+  assert.equal(weekly.status, 401);
+});
+
+test('weekly report download rejects malformed IDs', async () => {
+  const response = await request(app)
+    .get('/relatorio-geral/semanais/not-a-date/pdf')
+    .set('Authorization', 'Bearer token');
+  assert.equal(response.status, 400);
 });
 
 test('company report validates date filters before contacting Core', async () => {

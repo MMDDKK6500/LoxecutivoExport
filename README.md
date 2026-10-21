@@ -16,6 +16,11 @@ Variáveis:
 - `CORE_URL`: URL interna do Loxecutivo Core (padrão `http://127.0.0.1:8081`)
 - `REQUEST_TIMEOUT_MS`: tempo limite das chamadas ao Core
 - `CORS_ORIGINS`: origens permitidas pelo CORS, separadas por vírgulas (padrão `https://loxecutivo.mmddkk.dev.br,http://localhost:5173`)
+- `AUTH_SERVICE_URL`: endpoint interno de validação JWT usado ao listar/baixar PDFs arquivados
+- `REPORT_SERVICE_TOKEN`: segredo de serviço compartilhado com o Core para a geração automática
+- `REPORT_STORAGE_DIR`: diretório persistente dos PDFs semanais (padrão `storage/reports` dentro do projeto)
+- `REPORT_TIMEZONE`: fuso horário do agendamento (padrão `America/Sao_Paulo`)
+- `REPORT_SCHEDULE_HOUR`: hora local de geração no domingo, entre `0` e `23` (padrão `0`)
 
 Em produção, o frontend e as APIs ficam na mesma origem HTTPS (`https://loxecutivo.mmddkk.dev.br`) por meio do NGINX. O CORS do serviço aceita somente essa origem e a origem local do Vite para desenvolvimento; configure `CORS_ORIGINS` caso use outra origem.
 
@@ -65,6 +70,20 @@ O arquivo contém as abas `Resumo`, `Viagens`, `Passageiros`, `Motoristas`, `Ve�
 O PDF por evento usa o mesmo conteúdo e agrupamento do Excel em um relatório A4 com resumo, viagens, coleções de passageiros, motoristas, veículos e endereços.
 
 O relatório geral apresenta viagens por status, passageiros transportados em viagens realizadas, média de passageiros por viagem realizada, viagens por motorista, veículo e evento, distribuição por dia e hora, e rotas mais utilizadas. As abas incluem também a lista detalhada de viagens e os registros cadastrados sem uso no período para ajudar a identificar recursos ociosos. O cálculo não estima receita, custos, quilometragem, duração ou ocupação, pois esses dados ainda não são registrados pelo sistema.
+
+### Relatórios semanais arquivados
+
+O serviço gera um PDF do relatório geral todo domingo, no fuso configurado. Se o Export ficar parado no domingo, gera o relatório pendente na próxima inicialização. Cada semana é salva uma única vez, pelo domingo que encerra a semana. Os arquivos e metadados ficam em `REPORT_STORAGE_DIR`; mantenha esse diretório em armazenamento persistente e faça backup se precisar preservar o histórico. O Frontend lista e baixa os PDFs por meio de rotas que validam o JWT no serviço Auth.
+
+Para habilitar a geração automática, configure o mesmo segredo aleatório forte em `REPORT_SERVICE_TOKEN` no `.env` do Export e como variável de ambiente no serviço systemd do Core. O Core só aceita esse segredo para requisições `GET` provenientes de loopback; as operações de escrita continuam exigindo JWT de usuário. Exemplo para gerar um segredo: `openssl rand -hex 32`. Não coloque esse segredo no Frontend, NGINX ou em arquivos versionados.
+
+Rotas do arquivo:
+
+```http
+GET /relatorio-geral/semanais
+GET /relatorio-geral/semanais/{AAAA-MM-DD}/pdf
+Authorization: Bearer <jwt>
+```
 
 ## Nginx
 
