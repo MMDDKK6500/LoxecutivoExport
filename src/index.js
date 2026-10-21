@@ -5,6 +5,7 @@ const cors = require('cors');
 const ExcelJS = require('exceljs');
 const express = require('express');
 const PDFDocument = require('pdfkit');
+const { aggregateCompanyReport, createCompanyWorkbook, createCompanyPdf } = require('./companyReport');
 
 const app = express();
 const port = Number(process.env.PORT || 8083);
@@ -89,6 +90,19 @@ function requiredEventId(value) {
     throw new ServiceError(400, 'O id do evento deve ser um número inteiro positivo.');
   }
   return Number(value);
+}
+
+function optionalDateFilter(value, name) {
+  if (value === undefined || value === '') return '';
+  const text = String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    throw new ServiceError(400, `A data ${name} deve estar no formato AAAA-MM-DD.`);
+  }
+  const date = new Date(`${text}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+    throw new ServiceError(400, `A data ${name} é inválida.`);
+  }
+  return text;
 }
 
 function fullName(driver) {
@@ -630,6 +644,73 @@ async function loadEventData(eventId, authorization) {
   return { event, trips: Array.isArray(trips) ? trips : [], passengersByTrip, vehicles };
 }
 
+async function loadCompanyReport(authorization, filters) {
+  const [events, trips, drivers, vehicles, addresses, passengers] = await Promise.all([
+    coreGet('/eventos', authorization),
+    coreGet('/viagens', authorization),
+    coreGet('/motoristas', authorization),
+    coreGet('/veiculos', authorization),
+    coreGet('/enderecos', authorization),
+    coreGet('/passageiros', authorization),
+  ]);
+  return aggregateCompanyReport({ events, trips, drivers, vehicles, addresses, passengers }, filters);
+}
+
+function requestedCompanyReport(request) {
+  const from = optionalDateFilter(request.query.de, 'inicial');
+  const to = optionalDateFilter(request.query.ate, 'final');
+  if (from && to && from > to) {
+    throw new ServiceError(400, 'A data inicial não pode ser posterior à data final.');
+  }
+  return { from, to };
+}
+
+function companyReportBaseName(report) {
+  const from = report.period.from || 'inicio';
+  const to = report.period.to || 'hoje';
+  return `relatorio-geral-${from}-${to}`;
+}
+
+app.get('/relatorio-geral', async (request, response, next) => {
+  try {
+    const authorization = authorizationHeader(request);
+    const report = await loadCompanyReport(authorization, requestedCompanyReport(request));
+    response.json(report);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/relatorio-geral/excel', async (request, response, next) => {
+  try {
+    const authorization = authorizationHeader(request);
+    const report = await loadCompanyReport(authorization, requestedCompanyReport(request));
+    const buffer = await createCompanyWorkbook(report).xlsx.writeBuffer();
+    response.status(200).set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${companyReportBaseName(report)}.xlsx"`,
+      'Content-Length': buffer.length,
+    }).send(buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/relatorio-geral/pdf', async (request, response, next) => {
+  try {
+    const authorization = authorizationHeader(request);
+    const report = await loadCompanyReport(authorization, requestedCompanyReport(request));
+    const buffer = await createCompanyPdf(report);
+    response.status(200).set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${companyReportBaseName(report)}.pdf"`,
+      'Content-Length': buffer.length,
+    }).send(buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/eventos/:eventId/excel', async (request, response, next) => {
   try {
     const eventId = requiredEventId(request.params.eventId);
@@ -697,4 +778,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, createWorkbook, createPdfBuffer };
+module.exports = { app, createWorkbook, createPdfBuffer, loadCompanyReport, requestedCompanyReport };

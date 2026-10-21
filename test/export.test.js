@@ -27,8 +27,17 @@ test('health endpoint is public and identifies the export service', async () => 
 test('report endpoints require a Bearer token before contacting Core', async () => {
   const excel = await request(app).get('/eventos/1/excel');
   const pdf = await request(app).get('/eventos/1/pdf');
+  const company = await request(app).get('/relatorio-geral');
   assert.equal(excel.status, 401);
   assert.equal(pdf.status, 401);
+  assert.equal(company.status, 401);
+});
+
+test('company report validates date filters before contacting Core', async () => {
+  const response = await request(app)
+    .get('/relatorio-geral?de=2026-02-30')
+    .set('Authorization', 'Bearer token');
+  assert.equal(response.status, 400);
 });
 
 test('rejects invalid event identifiers', async () => {
