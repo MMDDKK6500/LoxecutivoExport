@@ -96,6 +96,19 @@ function fullName(driver) {
   return [driver.nome, driver.sobrenome].filter(Boolean).join(' ').trim() || 'Não informado';
 }
 
+function tripStatusLabel(status) {
+  const labels = { AGENDADA: 'Agendada', REALIZADA: 'Realizada', CANCELADA: 'Cancelada' };
+  return labels[status] || labels.AGENDADA;
+}
+
+function tripStatusCounts(trips) {
+  return trips.reduce((counts, trip) => {
+    const status = ['AGENDADA', 'REALIZADA', 'CANCELADA'].includes(trip.status) ? trip.status : 'AGENDADA';
+    counts[status] += 1;
+    return counts;
+  }, { AGENDADA: 0, REALIZADA: 0, CANCELADA: 0 });
+}
+
 function addressLabel(address) {
   if (!address) return 'Não informado';
   return [address.rua, address.numero, address.bairro]
@@ -221,7 +234,10 @@ function pdfText(value) {
 
 function createPdfBuffer(event, trips, passengersByTrip, vehicles) {
   const { sortedTrips, passengerCollections, vehicleMap } = reportData(event, trips, passengersByTrip, vehicles);
-  const totalPassengers = [...passengerCollections.values()].reduce((sum, item) => sum + item.count, 0);
+  const totalPassengers = sortedTrips
+    .filter((trip) => trip.status === 'REALIZADA')
+    .reduce((sum, trip) => sum + (passengerCollections.get(trip.id)?.count || 0), 0);
+  const statusCounts = tripStatusCounts(sortedTrips);
 
   return new Promise((resolve, reject) => {
     const document = new PDFDocument({ size: 'A4', margin: 42, bufferPages: true, compress: true });
@@ -308,7 +324,10 @@ function createPdfBuffer(event, trips, passengersByTrip, vehicles) {
       ['Local', addressLabel(event.idEndereco)],
       ['Cidade/UF', [event.idEndereco?.cidade, event.idEndereco?.uf].filter(Boolean).join('/') || 'Não informado'],
       ['Total de viagens', sortedTrips.length],
-      ['Total de passageiros', totalPassengers],
+      ['Viagens agendadas', statusCounts.AGENDADA],
+      ['Viagens realizadas', statusCounts.REALIZADA],
+      ['Viagens canceladas', statusCounts.CANCELADA],
+      ['Passageiros em viagens realizadas', totalPassengers],
       ['Gerado em', new Date().toLocaleString('pt-BR')],
     ];
     metadata.forEach(([label, value]) => {
@@ -322,31 +341,33 @@ function createPdfBuffer(event, trips, passengersByTrip, vehicles) {
     const tripRows = sortedTrips.map((trip) => {
       const collection = passengerCollections.get(trip.id);
       const vehicle = vehicleDetails(vehicleMap.get(trip.idVeiculo), trip.idVeiculo);
-      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''}\n${trip.idVeiculo || ''}`.trim(), passageiros: collection.id, quantidade: collection.count };
+      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''}\n${trip.idVeiculo || ''}`.trim(), passageiros: collection.id, quantidade: collection.count, status: tripStatusLabel(trip.status) };
     });
     drawTable('Resumo das viagens', [
-      { key: 'motorista', label: 'Motorista', width: 105 },
-      { key: 'data', label: 'Data', width: 58 },
-      { key: 'horario', label: 'Horário', width: 48 },
-      { key: 'veiculo', label: 'Veículo', width: 105 },
-      { key: 'passageiros', label: 'Coleção', width: 105 },
-      { key: 'quantidade', label: 'Qtd.', width: 42 },
+      { key: 'motorista', label: 'Motorista', width: 85 },
+      { key: 'data', label: 'Data', width: 55 },
+      { key: 'horario', label: 'Horário', width: 42 },
+      { key: 'veiculo', label: 'Veículo', width: 85 },
+      { key: 'passageiros', label: 'Coleção', width: 85 },
+      { key: 'quantidade', label: 'Qtd.', width: 38 },
+      { key: 'status', label: 'Status', width: 58 },
     ], tripRows);
 
     newPage();
     const detailedTripRows = sortedTrips.map((trip) => {
       const collection = passengerCollections.get(trip.id);
       const vehicle = vehicleDetails(vehicleMap.get(trip.idVeiculo), trip.idVeiculo);
-      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), origem: addressLabel(trip.localDeOrigem), destino: addressLabel(trip.localDeDestino), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''} - ${trip.idVeiculo || ''}`, passageiros: `${collection.id} (${collection.count})` };
+      return { motorista: fullName(trip.idMotorista), data: formatDate(trip.dataHora), horario: formatTime(trip.dataHora), origem: addressLabel(trip.localDeOrigem), destino: addressLabel(trip.localDeDestino), veiculo: `${vehicle.marca || ''} ${vehicle.modelo || ''} - ${trip.idVeiculo || ''}`, passageiros: `${collection.id} (${collection.count})`, status: tripStatusLabel(trip.status) };
     });
     drawTable('Viagens', [
-      { key: 'motorista', label: 'Motorista', width: 76 },
-      { key: 'data', label: 'Data', width: 45 },
-      { key: 'horario', label: 'Hora', width: 37 },
-      { key: 'origem', label: 'Origem', width: 83 },
-      { key: 'destino', label: 'Destino', width: 83 },
-      { key: 'veiculo', label: 'Veículo', width: 100 },
-      { key: 'passageiros', label: 'Passageiros', width: 87 },
+      { key: 'motorista', label: 'Motorista', width: 65 },
+      { key: 'data', label: 'Data', width: 40 },
+      { key: 'horario', label: 'Hora', width: 35 },
+      { key: 'origem', label: 'Origem', width: 70 },
+      { key: 'destino', label: 'Destino', width: 70 },
+      { key: 'veiculo', label: 'Veículo', width: 80 },
+      { key: 'passageiros', label: 'Passageiros', width: 80 },
+      { key: 'status', label: 'Status', width: 55 },
     ], detailedTripRows);
 
     newPage();
@@ -436,7 +457,10 @@ function createWorkbook(event, trips, passengersByTrip, vehicles) {
 
   const vehicleMap = new Map((Array.isArray(vehicles) ? vehicles : []).map((vehicle) => [vehicle.idPlaca, vehicle]));
   const eventAddress = event.idEndereco;
-  const totalPassengers = [...passengerCollections.values()].reduce((sum, item) => sum + item.count, 0);
+  const totalPassengers = sortedTrips
+    .filter((trip) => trip.status === 'REALIZADA')
+    .reduce((sum, trip) => sum + (passengerCollections.get(trip.id)?.count || 0), 0);
+  const statusCounts = tripStatusCounts(sortedTrips);
 
   const summary = workbook.addWorksheet('Resumo');
   summary.views = [{ showGridLines: false }];
@@ -451,32 +475,43 @@ function createWorkbook(event, trips, passengersByTrip, vehicles) {
   summary.getCell('B7').value = [eventAddress?.cidade, eventAddress?.uf].filter(Boolean).join('/') || 'Não informado';
   summary.getCell('A8').value = 'Total de viagens';
   summary.getCell('B8').value = sortedTrips.length;
-  summary.getCell('A9').value = 'Total de passageiros';
+  summary.getCell('A9').value = 'Passageiros realizados';
   summary.getCell('B9').value = totalPassengers;
   summary.getCell('A10').value = 'Gerado em';
   summary.getCell('B10').value = new Date();
   summary.getCell('B10').numFmt = 'dd/mm/yyyy hh:mm';
+  summary.getCell('D5').value = 'Agendadas';
+  summary.getCell('E5').value = statusCounts.AGENDADA;
+  summary.getCell('D6').value = 'Realizadas';
+  summary.getCell('E6').value = statusCounts.REALIZADA;
+  summary.getCell('D7').value = 'Canceladas';
+  summary.getCell('E7').value = statusCounts.CANCELADA;
   for (let row = 5; row <= 10; row += 1) {
     summary.getCell(`A${row}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.blue } };
     summary.getCell(`A${row}`).font = { name: 'Arial', size: 10, bold: true, color: COLORS.navy };
     summary.getCell(`B${row}`).font = { name: 'Arial', size: 10, color: COLORS.text };
   }
-  summary.getRow(13).values = ['Motorista', 'Data', 'Horário', 'Veículo', 'Coleção de passageiros', 'Qtd.'];
+  for (let row = 5; row <= 7; row += 1) {
+    summary.getCell(`D${row}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.blue } };
+    summary.getCell(`D${row}`).font = { name: 'Arial', size: 10, bold: true, color: COLORS.navy };
+    summary.getCell(`E${row}`).font = { name: 'Arial', size: 10, color: COLORS.text };
+  }
+  summary.getRow(13).values = ['Motorista', 'Data', 'Horário', 'Veículo', 'Coleção de passageiros', 'Qtd.', 'Status'];
   sortedTrips.forEach((trip, index) => {
     const row = summary.getRow(14 + index);
     const parts = dateParts(trip.dataHora);
     const collection = passengerCollections.get(trip.id);
-    row.values = [fullName(trip.idMotorista), parts.date, parts.time, trip.idVeiculo, collection.id, collection.count];
+    row.values = [fullName(trip.idMotorista), parts.date, parts.time, trip.idVeiculo, collection.id, collection.count, tripStatusLabel(trip.status)];
   });
   const summaryLastRow = 13 + sortedTrips.length;
   addDateTimeFormats(summary, 'B', 'C', 14, summaryLastRow);
-  styleTable(summary, 13, summaryLastRow, { A: 20, B: 13, C: 11, D: 14, E: 24, F: 10 });
-  addTable(summary, 'ResumoTable', 13, summaryLastRow, 'F');
+  styleTable(summary, 13, summaryLastRow, { A: 20, B: 13, C: 11, D: 14, E: 24, F: 10, G: 14 });
+  addTable(summary, 'ResumoTable', 13, summaryLastRow, 'G');
 
   const tripSheet = workbook.addWorksheet('Viagens');
   tripSheet.views = [{ showGridLines: false }];
-  styleTitle(tripSheet, 'Viagens do evento', 'M');
-  tripSheet.getRow(4).values = ['Motorista', 'Data', 'Horário', 'Origem', 'Destino', 'CPF', 'RG', 'Marca', 'Modelo', 'Ano', 'Cor', 'Placa', 'Coleção de passageiros'];
+  styleTitle(tripSheet, 'Viagens do evento', 'N');
+  tripSheet.getRow(4).values = ['Motorista', 'Data', 'Horário', 'Origem', 'Destino', 'CPF', 'RG', 'Marca', 'Modelo', 'Ano', 'Cor', 'Placa', 'Coleção de passageiros', 'Status'];
   sortedTrips.forEach((trip, index) => {
     const row = tripSheet.getRow(5 + index);
     const parts = dateParts(trip.dataHora);
@@ -496,12 +531,13 @@ function createWorkbook(event, trips, passengersByTrip, vehicles) {
       vehicle.cor || '',
       trip.idVeiculo || '',
       collection.id,
+      tripStatusLabel(trip.status),
     ];
   });
   const tripLastRow = 4 + sortedTrips.length;
   addDateTimeFormats(tripSheet, 'B', 'C', 5, tripLastRow);
-  styleTable(tripSheet, 4, tripLastRow, { A: 20, B: 12, C: 10, D: 31, E: 35, F: 14, G: 13, H: 14, I: 16, J: 10, K: 12, L: 12, M: 24 });
-  addTable(tripSheet, 'ViagensTable', 4, tripLastRow, 'M');
+  styleTable(tripSheet, 4, tripLastRow, { A: 20, B: 12, C: 10, D: 31, E: 35, F: 14, G: 13, H: 14, I: 16, J: 10, K: 12, L: 12, M: 24, N: 14 });
+  addTable(tripSheet, 'ViagensTable', 4, tripLastRow, 'N');
 
   const passengerSheet = workbook.addWorksheet('Passageiros');
   passengerSheet.views = [{ showGridLines: false }];

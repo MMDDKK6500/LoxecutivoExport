@@ -13,6 +13,7 @@ const trip = {
   dataHora: '2026-10-20T08:30:00',
   idMotorista: { id: 2, nome: 'Ana', sobrenome: 'Silva', cpf: '123', rg: '456' },
   idVeiculo: 'ABC-1234',
+  status: 'REALIZADA',
   localDeOrigem: event.idEndereco,
   localDeDestino: { id: 11, rua: 'Rua Norte', numero: '20', bairro: 'Bairro', cidade: 'Campinas', uf: 'SP' },
 };
@@ -36,14 +37,32 @@ test('rejects invalid event identifiers', async () => {
 });
 
 test('generates both report formats with the event data', async () => {
-  const passengers = new Map([[trip.id, [{ id: 30, nome: 'Pessoa' }]]]);
+  const trips = [
+    trip,
+    { ...trip, id: 21, status: 'AGENDADA' },
+    { ...trip, id: 22, status: 'CANCELADA' },
+    { ...trip, id: 23, status: undefined },
+  ];
+  const passengers = new Map([
+    [trip.id, [{ id: 30, nome: 'Pessoa' }, { id: 31, nome: 'Outra pessoa' }]],
+    [21, [{ id: 32, nome: 'Passageiro agendado' }]],
+    [22, [{ id: 33, nome: 'Passageiro cancelado' }]],
+  ]);
   const vehicles = [{ idPlaca: trip.idVeiculo, marca: 'Marca', modelo: 'Modelo', ano: 2024, cor: 'Preto' }];
 
-  const workbook = createWorkbook(event, [trip], passengers, vehicles);
+  const workbook = createWorkbook(event, trips, passengers, vehicles);
   const excelBuffer = await workbook.xlsx.writeBuffer();
-  const pdfBuffer = await createPdfBuffer(event, [trip], passengers, vehicles);
+  const pdfBuffer = await createPdfBuffer(event, trips, passengers, vehicles);
 
   assert.ok(excelBuffer.length > 1000);
+  assert.equal(workbook.getWorksheet('Resumo').getCell('E5').value, 2);
+  assert.equal(workbook.getWorksheet('Resumo').getCell('E6').value, 1);
+  assert.equal(workbook.getWorksheet('Resumo').getCell('E7').value, 1);
+  assert.equal(workbook.getWorksheet('Viagens').getCell('N5').value, 'Realizada');
+  assert.equal(workbook.getWorksheet('Viagens').getCell('N6').value, 'Agendada');
+  assert.equal(workbook.getWorksheet('Viagens').getCell('N7').value, 'Cancelada');
+  assert.equal(workbook.getWorksheet('Viagens').getCell('N8').value, 'Agendada');
+  assert.equal(workbook.getWorksheet('Resumo').getCell('B9').value, 2);
   assert.equal(pdfBuffer.subarray(0, 5).toString(), '%PDF-');
   assert.ok(pdfBuffer.length > 1000);
 });
